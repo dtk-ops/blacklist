@@ -1,0 +1,50 @@
+name: Append blacklist entries from issues
+on:
+  issues:
+    types: [opened, edited, reopened, labeled]
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  append:
+    if: contains(github.event.issue.labels.*.name, 'blacklist')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract fields from issue body
+        id: parse
+        run: |
+          BODY=$(printf %s "${{ github.event.issue.body }}" | tr -d '\r')
+          # ganz simple Extraktion (funktioniert gut mit dem vorgeschlagenen Template)
+          NAME=$(echo "$BODY"   | sed -n 's/^**Name:** \([^*][^*]*\).*$/\1/p' | head -n1 | xargs)
+          REASON=$(echo "$BODY" | sed -n 's/^**Grund:** \([^*][^*]*\).*$/\1/p' | head -n1 | xargs)
+          AUTHOR=$(echo "$BODY" | sed -n 's/^**Von:** \([^*][^*]*\).*$/\1/p' | head -n1 | xargs)
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "reason=$REASON" >> $GITHUB_OUTPUT
+          echo "author=$AUTHOR" >> $GITHUB_OUTPUT
+          echo "ts=$(date +%s000)" >> $GITHUB_OUTPUT
+
+      - name: Append to blacklist.json
+        run: |
+          NAME="${{ steps.parse.outputs.name }}"
+          [ -z "$NAME" ] && echo "No name parsed, skipping." && exit 0
+          REASON="${{ steps.parse.outputs.reason }}"
+          AUTHOR="${{ steps.parse.outputs.author }}"
+          TS="${{ steps.parse.outputs.ts }}"
+
+          jq --arg n "$NAME" --arg r "$REASON" --arg a "$AUTHOR" --argjson t "$TS" \
+             '.[. | length] |= . // [] | . + [{name:$n, reason:$r, author:$a, timestamp:$t}]' \
+             blacklist.json > blacklist.tmp.json || cp blacklist.json blacklist.tmp.json
+
+          mv blacklist.tmp.json blacklist.json
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add blacklist.json
+          git commit -m "Append from issue #${{ github.event.issue.number }}: ${{ steps.parse.outputs.name }}" || echo "Nothing to commit"
+          git push
